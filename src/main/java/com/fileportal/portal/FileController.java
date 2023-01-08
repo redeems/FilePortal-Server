@@ -2,6 +2,7 @@ package com.fileportal.portal;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -28,28 +29,48 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequestMapping("/files")
 public class FileController {
     private final Map<String, ByteArrayOutputStream> streams = new ConcurrentHashMap<>();
-    private final Map<String, Integer> progress = new ConcurrentHashMap<>();
+    private final Map<String, Integer> downloadProgress = new ConcurrentHashMap<>();
+    private final Map<String, Integer> uploadProgress = new ConcurrentHashMap<>();
+
 
     @PutMapping("/{fileId}")
     //curl -v -X PUT -H "Content-Type: application/octet-stream" --data-binary @path http://localhost:8080/files/{fileId}
-    public void uploadFile(@PathVariable String fileId, HttpServletRequest request) throws IOException {
+    public Map<String, String> uploadFile(@PathVariable String fileId, HttpServletRequest request) throws IOException {
         var outputStream = new ByteArrayOutputStream();
         var inputStream = request.getInputStream();
         var chunk = new byte[1024];
         var bytesRead = -1;
 
         streams.put(fileId, outputStream);
-        progress.put(fileId, 0);
+        uploadProgress.put(fileId, 0);
 
+        var totalBytes = 0;
         while ((bytesRead = inputStream.read(chunk)) != -1) {
             outputStream.write(chunk, 0, bytesRead);
+            totalBytes += bytesRead;
+            var progress = (int) (((double) totalBytes / outputStream.size()) * 100);
+            this.uploadProgress.put(fileId, progress);
         }
+
+        var response = new ConcurrentHashMap<String,String>();
+        response.put("downloadLink", "http://localhost:8080/files/" + fileId);
+        System.out.println(response.values());
+        return ResponseEntity.ok(response).getBody();
     }
 
-    @GetMapping("/{fileId}/progress")
+
+        @GetMapping("/{fileId}/uploadprogress")
+    public Map<String, Object> getUploadProgress(@PathVariable String fileId) {
+        Map<String, Object> response = new ConcurrentHashMap<>();
+        response.put("progress", uploadProgress.get(fileId));
+        return response;
+    }
+
+
+    @GetMapping("/{fileId}/downloadprogress")
     //curl -X GET http://localhost:8080/files/{fileId}/progress
     public int getProgress(@PathVariable String fileId) {
-        return progress.get(fileId);
+        return downloadProgress.get(fileId);
     }
 
     @GetMapping("/{fileId}")
@@ -66,11 +87,11 @@ public class FileController {
                 outputStream.write(fileChunk, offset, chunkLength);
                 bytesWritten += chunkLength;
                 var progress = (int) (((double) bytesWritten / totalBytes) * 100);
-                this.progress.put(fileId, progress);
+                this.downloadProgress.put(fileId, progress);
             }
 
             streams.remove(fileId);
-            progress.remove(fileId);
+            downloadProgress.remove(fileId);
         };
     }
 }
