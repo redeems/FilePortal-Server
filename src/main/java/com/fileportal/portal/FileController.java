@@ -14,6 +14,8 @@ import java.io.InputStream;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * The FileController class provides efficient file transfer between two clients by storing the input stream of an uploaded
@@ -23,7 +25,9 @@ import java.util.concurrent.Semaphore;
 @RestController
 @RequestMapping("/files")
 public class FileController {
+
     private record Request(Semaphore semaphore, InputStream stream, long contentLength, String fileName) { }
+    private static final Logger LOGGER = Logger.getLogger(FileController.class.getName());
     private final Map<String, Request> streams = new ConcurrentHashMap<>();
 
     /**
@@ -31,17 +35,17 @@ public class FileController {
      * input stream, content length, and file name are stored in a Request record and placed in the map under the specified
      * fileId. A semaphore is acquired and released to synchronize the upload and download processes.
      *
-     * @param fileId a unique identifier for the uploaded file
+     * @param fileId  a unique identifier for the uploaded file
      * @param request the HttpServletRequest containing the input stream of the file being uploaded and the "Name" header
      *                specifying the file name
-     * <br><br>
-     * fails if an error occurs reading the input stream
-     * <br>
-     * fails if the thread is interrupted while acquiring the semaphore
+     *                <br><br>
+     *                fails if an error occurs reading the input stream
+     *                <br>
+     *                fails if the thread is interrupted while acquiring the semaphore
      */
     @PutMapping("/{fileId}")
     //curl -v -X PUT -H "Content-Type: application/octet-stream" -H "Name: filename" --data-binary "@path" http://localhost:8080/files/{fileId}
-    public void uploadFile(@PathVariable String fileId, HttpServletRequest request)  {
+    public void uploadFile(@PathVariable String fileId, HttpServletRequest request) {
         try {
             var semaphore = new Semaphore(0);
             var fileName = request.getHeader("Name");
@@ -59,9 +63,9 @@ public class FileController {
      * in chunks using the transferTo method. The semaphore associated with the Request record is released to indicate that
      * the download process is complete.
      *
-     * @param fileId the unique identifier for the file to be downloaded
+     * @param fileId   the unique identifier for the file to be downloaded
      * @param response the HttpServletResponse to transfer the file data to
-     * @throws IOException if an error occurs reading the input stream or writing to the output stream
+     * @throws FileDownloadException if the request for a given file id does not exist.
      */
     @GetMapping("/{fileId}")
     //curl -X GET http://localhost:8080/files/{fileId} > path
@@ -70,21 +74,18 @@ public class FileController {
             var request = streams.get(fileId);
 
             if (request == null) {
-                throw new FileNotFoundException("File with ID " + fileId + " not found");
+                LOGGER.log(Level.SEVERE, "File with ID " + fileId + " not found");
+                throw new FileNotFoundException("");
             }
 
-            System.out.println("downloading: [" + fileId + "] " + request.fileName + " [" + request.contentLength + " bytes]");
+            LOGGER.info("downloading: [" + fileId + "] " + request.fileName + " [" + request.contentLength + " bytes]");
             streams.get(fileId).stream.transferTo(response.getOutputStream());
             streams.get(fileId).semaphore.release();
-            System.out.println("done with: [" + fileId + "]");
+            streams.remove(fileId);
+            LOGGER.info("done with: [" + fileId + "]");
         } catch (IOException e) {
-            throw new FileDownloadException("File with ID " + fileId + " failed to download.");
+            LOGGER.log(Level.SEVERE, "File with ID " + fileId + " failed to download.");
+            throw new FileDownloadException("");
         }
     }
 }
-
-/*
-TODO
-    - add verification of the clients
-    - use a logger rather than sout
- */
