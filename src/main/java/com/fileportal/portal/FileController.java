@@ -2,96 +2,89 @@ package com.fileportal.portal;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 
 /**
- * The FileController class is designed for transferring files between clients without
- * storing the full contents of the file on the server. The class uses a Map to store
- * the chunks of the file being uploaded as they are received.
- * <br<br>
- * When a client requests to download a file, the server streams the contents of the file to the client in chunks.
- * This allows for efficient transfer of large files without using excessive server memory.
- * Additionally, the FileController class is thread-safe, as it uses a ConcurrentHashMap to store
- * the file chunks, allowing multiple clients to upload and download files concurrently.
+ * The FileController class provides efficient file transfer between two clients by storing the input stream of an uploaded
+ * file in a map and transferring the data in chunks using the transferTo method. This allows for multiple large files to
+ * be transferred simultaneously without requiring a database or excessive memory usage on the server.
  */
 @RestController
 @RequestMapping("/files")
 public class FileController {
-    private final Map<String, ByteArrayOutputStream> streams = new ConcurrentHashMap<>();
-    private final Map<String, Integer> downloadProgress = new ConcurrentHashMap<>();
-    private final Map<String, Integer> uploadProgress = new ConcurrentHashMap<>();
+    private record Request(Semaphore semaphore, InputStream stream, long contentLength, String fileName) { }
+    private final Map<String, Request> streams = new ConcurrentHashMap<>();
 
-
+    /**
+     * Accepts an input stream and stores it in a map to be retrieved later by a downloading client. The uploaded file's
+     * input stream, content length, and file name are stored in a Request record and placed in the map under the specified
+     * fileId. A semaphore is acquired and released to synchronize the upload and download processes.
+     *
+     * @param fileId a unique identifier for the uploaded file
+     * @param request the HttpServletRequest containing the input stream of the file being uploaded and the "Name" header
+     *                specifying the file name
+     * <br><br>
+     * fails if an error occurs reading the input stream
+     * <br>
+     * fails if the thread is interrupted while acquiring the semaphore
+     */
     @PutMapping("/{fileId}")
-    //curl -v -X PUT -H "Content-Type: application/octet-stream" --data-binary @path http://localhost:8080/files/{fileId}
-    public Map<String, String> uploadFile(@PathVariable String fileId, HttpServletRequest request) throws IOException {
-        var outputStream = new ByteArrayOutputStream();
-        var inputStream = request.getInputStream();
-        var chunk = new byte[1024];
-        var bytesRead = -1;
-
-        streams.put(fileId, outputStream);
-        uploadProgress.put(fileId, 0);
-
-        var totalBytes = 0;
-        while ((bytesRead = inputStream.read(chunk)) != -1) {
-            outputStream.write(chunk, 0, bytesRead);
-            totalBytes += bytesRead;
-            var progress = (int) (((double) totalBytes / outputStream.size()) * 100);
-            this.uploadProgress.put(fileId, progress);
+    //curl -v -X PUT -H "Content-Type: application/octet-stream" -H "Name: filename" --data-binary "@path" http://localhost:8080/files/{fileId}
+    public void uploadFile(@PathVariable String fileId, HttpServletRequest request)  {
+        try {
+            var semaphore = new Semaphore(0);
+            var fileName = request.getHeader("Name");
+            var fileSize = request.getContentLength();
+            var r = new Request(semaphore, request.getInputStream(), fileSize, fileName);
+            streams.put(fileId, r);
+            semaphore.acquire();
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
         }
-
-        var response = new ConcurrentHashMap<String,String>();
-        response.put("downloadLink", "http://localhost:8080/files/" + fileId);
-        System.out.println(response.values());
-        return ResponseEntity.ok(response).getBody();
     }
 
-
-        @GetMapping("/{fileId}/uploadprogress")
-    public Map<String, Object> getUploadProgress(@PathVariable String fileId) {
-        Map<String, Object> response = new ConcurrentHashMap<>();
-        response.put("progress", uploadProgress.get(fileId));
-        return response;
-    }
-
-
-    @GetMapping("/{fileId}/downloadprogress")
-    //curl -X GET http://localhost:8080/files/{fileId}/progress
-    public int getProgress(@PathVariable String fileId) {
-        return downloadProgress.get(fileId);
-    }
-
+    /**
+     * Retrieves the stored input stream for the specified file and transfers the data to the provided response's output stream
+     * in chunks using the transferTo method. The semaphore associated with the Request record is released to indicate that
+     * the download process is complete.
+     *
+     * @param fileId the unique identifier for the file to be downloaded
+     * @param response the HttpServletResponse to transfer the file data to
+     * @throws IOException if an error occurs reading the input stream or writing to the output stream
+     */
     @GetMapping("/{fileId}")
     //curl -X GET http://localhost:8080/files/{fileId} > path
-    public StreamingResponseBody downloadFile(@PathVariable String fileId, HttpServletResponse response) throws IOException {
-        return outputStream -> {
-            var fileChunk = streams.get(fileId).toByteArray();
-            var chunkSize = 1024;
-            var totalBytes = fileChunk.length;
-            var bytesWritten = 0;
+    public void downloadFile(@PathVariable String fileId, HttpServletResponse response) throws FileDownloadException {
+        try {
+            var request = streams.get(fileId);
 
-            for (var offset = 0; offset < fileChunk.length; offset += chunkSize) {
-                var chunkLength = Math.min(chunkSize, fileChunk.length - offset);
-                outputStream.write(fileChunk, offset, chunkLength);
-                bytesWritten += chunkLength;
-                var progress = (int) (((double) bytesWritten / totalBytes) * 100);
-                this.downloadProgress.put(fileId, progress);
+            if (request == null) {
+                throw new FileNotFoundException("File with ID " + fileId + " not found");
             }
 
-            streams.remove(fileId);
-            downloadProgress.remove(fileId);
-        };
+            System.out.println("downloading: [" + fileId + "] " + request.fileName + " [" + request.contentLength + " bytes]");
+            streams.get(fileId).stream.transferTo(response.getOutputStream());
+            streams.get(fileId).semaphore.release();
+            System.out.println("done with: [" + fileId + "]");
+        } catch (IOException e) {
+            throw new FileDownloadException("File with ID " + fileId + " failed to download.");
+        }
     }
 }
+
+/*
+TODO
+    - add verification of the clients
+    - use a logger rather than sout
+ */
