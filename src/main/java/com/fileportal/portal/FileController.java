@@ -79,6 +79,7 @@ public class FileController {
             }
 
             LOGGER.info("downloading: [" + fileId + "] " + request.fileName + " [" + request.contentLength + " bytes]");
+            response.setHeader("Content-Disposition", "attachment; filename=" + request.fileName);
             streams.get(fileId).stream.transferTo(response.getOutputStream());
             streams.get(fileId).semaphore.release();
             streams.remove(fileId);
