@@ -2,6 +2,7 @@ package com.fileportal.portal;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -14,6 +15,7 @@ import java.io.InputStream;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -25,10 +27,21 @@ import java.util.logging.Logger;
 @RestController
 @RequestMapping("/files")
 public class FileController {
-
-    private record Request(Semaphore semaphore, InputStream stream, long contentLength, String fileName) { }
+    private record Request(Semaphore semaphore, InputStream stream, long contentLength, String fileName, AtomicBoolean accessed, long created) { }
     private static final Logger LOGGER = Logger.getLogger(FileController.class.getName());
     private final Map<String, Request> streams = new ConcurrentHashMap<>();
+    private static final long REQUEST_CLEAR_DELAY = 1; //minutes
+    private static final long REQUEST_TIMEOUT = 10; //minutes
+
+    @Scheduled(fixedDelay = REQUEST_CLEAR_DELAY * 60 * 1000)
+    public void clearStaleRequests() {
+        streams.forEach((key, request) -> {
+            if (!request.accessed.get() && System.currentTimeMillis() - request.created >= REQUEST_TIMEOUT * 60 * 1000) {
+                LOGGER.info("removing request: " + request.fileName);
+                streams.remove(key);
+            }
+        });
+    }
 
     /**
      * Accepts an input stream and stores it in a map to be retrieved later by a downloading client. The uploaded file's
@@ -50,7 +63,7 @@ public class FileController {
             var semaphore = new Semaphore(0);
             var fileName = request.getHeader("Name");
             var fileSize = request.getContentLength();
-            var r = new Request(semaphore, request.getInputStream(), fileSize, fileName);
+            var r = new Request(semaphore, request.getInputStream(), fileSize, fileName, new AtomicBoolean(false), System.currentTimeMillis());
             streams.put(fileId, r);
             semaphore.acquire();
         } catch (IOException | InterruptedException e) {
@@ -80,6 +93,7 @@ public class FileController {
 
             LOGGER.info("downloading: [" + fileId + "] " + request.fileName + " [" + request.contentLength + " bytes]");
             response.setHeader("Content-Disposition", "attachment; filename=" + request.fileName);
+            streams.get(fileId).accessed.set(true);
             streams.get(fileId).stream.transferTo(response.getOutputStream());
             streams.get(fileId).semaphore.release();
             streams.remove(fileId);
