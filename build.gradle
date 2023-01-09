@@ -8,6 +8,10 @@ group = 'com.fileportal'
 version = '0.0.1-SNAPSHOT'
 sourceCompatibility = '17'
 
+apply plugin: 'application'
+
+mainClassName = "com.fileportal.portal.FilePortalApplication"
+
 repositories {
 	mavenCentral()
 }

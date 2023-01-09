@@ -67,7 +67,7 @@ public class FileController {
             streams.put(fileId, r);
             semaphore.acquire();
         } catch (IOException | InterruptedException e) {
-            e.printStackTrace();
+
         }
     }
 

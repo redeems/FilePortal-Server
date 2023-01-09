@@ -20,4 +20,10 @@ public class ExceptionHandler {
         response.setStatus(HttpServletResponse.SC_EXPECTATION_FAILED);
         response.getWriter().write(ex.getMessage());
     }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(InterruptedException.class)
+    public void handeInterruption(HttpServletResponse response, FileNotFoundException ex) throws IOException {
+        response.setStatus(HttpServletResponse.SC_EXPECTATION_FAILED);
+        response.getWriter().write(ex.getMessage());
+    }
 }
